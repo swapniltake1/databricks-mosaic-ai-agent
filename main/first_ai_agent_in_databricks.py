@@ -34,6 +34,30 @@ warnings.filterwarnings('ignore')
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC lets add the loggin code hre 
+
+# COMMAND ----------
+
+import logging
+import mlflow
+import time
+
+# -------------------------------
+# Python Logger Configuration
+# -------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
+
+logger = logging.getLogger("mosaic-agent")
+
+logger.info("Logging initialized successfully")
+
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Pick the first LLM API available in your Databricks workspace
 
 # COMMAND ----------
@@ -115,23 +139,34 @@ response.choices[0].message.content
 
 def run_llm(prompt):
     """
-    Send a user prompt to the LLM, and return a list of LLM response messages
-    The LLM is allowed to call the code interpreter tool if needed, to respond to the user
+    Send a user prompt to the LLM and log inputs/outputs
     """
-    # Initialize an empty list to store response messages
-    result_msgs = []
-    # Send the user prompt to the LLM endpoint and get the response
-    response = openai_client.chat.completions.create(
-        model=LLM_ENDPOINT_NAME,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    # Extract the first message from the response
-    msg = response.choices[0].message
-    # Convert the message to a dictionary and add it to the result list
-    result_msgs.append(msg.to_dict())
+    start_time = time.time()
+    logger.info(f"LLM call started | Prompt: {prompt}")
 
-    # Return the list of response messages
-    return result_msgs
+    try:
+        response = openai_client.chat.completions.create(
+            model=LLM_ENDPOINT_NAME,
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        msg = response.choices[0].message
+        latency = time.time() - start_time
+
+        # MLflow logging
+        mlflow.log_param("llm_model", LLM_ENDPOINT_NAME)
+        mlflow.log_metric("llm_latency_sec", latency)
+
+        logger.info(f"LLM response received in {latency:.2f}s")
+        logger.debug(f"LLM raw response: {msg.content}")
+
+        return [msg.to_dict()]
+
+    except Exception as e:
+        logger.error("LLM call failed", exc_info=True)
+        mlflow.log_param("llm_error", str(e))
+        raise
+
 
 # COMMAND ----------
 
@@ -176,39 +211,70 @@ def call_tool(tool_name, parameters):
 
 def run_agent(prompt):
     """
-    Send a user prompt to the LLM, and return a list of LLM response messages
-    The LLM is allowed to call the code interpreter tool if needed, to respond to the user
+    Agent with tool usage + full logging
     """
-    result_msgs = []
-    response = openai_client.chat.completions.create(
-        model=LLM_ENDPOINT_NAME,
-        messages=[{"role": "user", "content": prompt}],
-        tools=builtin_tools,
-    )
-    msg = response.choices[0].message
-    result_msgs.append(msg.to_dict())
+    logger.info(f"Agent invoked | User prompt: {prompt}")
+    start_time = time.time()
 
-    # If the model executed a tool, call it
-    if msg.tool_calls:
-        call = msg.tool_calls[0]
-        tool_result = call_tool(call.function.name, json.loads(call.function.arguments))
-        result_msgs.append(
-            {
+    result_msgs = []
+
+    try:
+        response = openai_client.chat.completions.create(
+            model=LLM_ENDPOINT_NAME,
+            messages=[{"role": "user", "content": prompt}],
+            tools=builtin_tools,
+        )
+
+        msg = response.choices[0].message
+        result_msgs.append(msg.to_dict())
+
+        logger.info("LLM responded")
+        logger.info(f"Assistant message: {msg.content}")
+
+        # Tool execution logging
+        if msg.tool_calls:
+            call = msg.tool_calls[0]
+            logger.info(f"Tool called: {call.function.name}")
+            logger.debug(f"Tool arguments: {call.function.arguments}")
+
+            tool_result = call_tool(
+                call.function.name,
+                json.loads(call.function.arguments)
+            )
+
+            logger.info("Tool execution completed")
+
+            result_msgs.append({
                 "role": "tool",
                 "content": tool_result.value,
                 "name": call.function.name,
                 "tool_call_id": call.id,
-            }
-        )
-    return result_msgs
+            })
+
+            mlflow.log_metric("tool_calls", 1)
+        else:
+            mlflow.log_metric("tool_calls", 0)
+
+        latency = time.time() - start_time
+        mlflow.log_metric("agent_latency_sec", latency)
+
+        logger.info(f"Agent completed in {latency:.2f}s")
+
+        return result_msgs
+
+    except Exception as e:
+        logger.error("Agent execution failed", exc_info=True)
+        mlflow.log_param("agent_error", str(e))
+        raise
+
 
 # COMMAND ----------
 
-answer = run_agent("What is the best place to visit in india ?")
-
-#answer = run_agent("What is the square root of 429?")
-for message in answer:
-    print(f'{message["role"]}: {message["content"]}')
+# DBTITLE 1,Cell 23
+with mlflow.start_run(run_name="agent-test-run", nested=True):
+    answer = run_agent("What is the square root of 9?")
+    for message in answer:
+        print(f'{message["role"]}: {message["content"]}')
 
 # COMMAND ----------
 
