@@ -1,4 +1,4 @@
-# Databricks Mosaic AI Agent Starter
+# Databricks Mosaic AI Agent
 
 A practical starter project for building a **tool-enabled AI agent** on Databricks using the **Mosaic AI Agent Framework**, Databricks Model Serving, Unity Catalog functions, and MLflow tracing.
 
